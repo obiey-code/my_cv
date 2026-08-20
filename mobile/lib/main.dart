@@ -10,10 +10,31 @@ class ApiService {
   static const String baseUrl = 'https://luka-mosala-backend.onrender.com';
   static String? authToken;
 
+  // In-memory cache for API requests with 15-second TTL
+  static final Map<String, dynamic> _cache = {};
+  static final Map<String, DateTime> _cacheExpiry = {};
+
   static Map<String, String> get headers => {
         'Content-Type': 'application/json',
         if (authToken != null) 'Authorization': 'Bearer $authToken',
       };
+
+  static bool _isCacheValid(String key) {
+    if (_cache.containsKey(key) && _cacheExpiry.containsKey(key)) {
+      return DateTime.now().isBefore(_cacheExpiry[key]!);
+    }
+    return false;
+  }
+
+  static void _setCache(String key, dynamic data) {
+    _cache[key] = data;
+    _cacheExpiry[key] = DateTime.now().add(const Duration(seconds: 15));
+  }
+
+  static void invalidateCache() {
+    _cache.clear();
+    _cacheExpiry.clear();
+  }
 
   static Future<bool> login(String username, String password) async {
     try {
@@ -66,14 +87,36 @@ class ApiService {
     return null;
   }
 
-  static Future<List<dynamic>> fetchPackages() async {
+  static Future<List<dynamic>> fetchPlans() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/subscriptions/plans/'),
+        headers: headers,
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+    } catch (e) {
+      debugPrint('Fetch plans error: $e');
+    }
+    return [];
+  }
+
+  static Future<List<dynamic>> fetchPackages({bool forceRefresh = false}) async {
+    const cacheKey = 'packages';
+    if (!forceRefresh && _isCacheValid(cacheKey)) {
+      return _cache[cacheKey] as List<dynamic>;
+    }
+
     try {
       final response = await http.get(
         Uri.parse('$baseUrl/api/jobs/packages/'),
         headers: headers,
       );
       if (response.statusCode == 200) {
-        return jsonDecode(response.body);
+        final data = jsonDecode(response.body) as List<dynamic>;
+        _setCache(cacheKey, data);
+        return data;
       }
     } catch (e) {
       debugPrint('Fetch packages error: $e');
@@ -81,15 +124,16 @@ class ApiService {
     return [];
   }
 
-  static Future<bool> generateApplication(String rawText, String sourceUrl) async {
+  static Future<bool> generateApplication(String rawText, String sourceUrl, {String? fileName}) async {
     try {
       final response = await http.post(
         Uri.parse('$baseUrl/api/jobs/offers/'),
         headers: headers,
         body: jsonEncode({
-          'source_type': sourceUrl.isNotEmpty ? 'URL' : 'TEXT',
+          'source_type': sourceUrl.isNotEmpty ? 'URL' : (fileName != null ? 'FILE' : 'TEXT'),
           'source_url': sourceUrl,
           'raw_text': rawText,
+          if (fileName != null) 'file_name': fileName,
         }),
       );
       return response.statusCode == 201;
@@ -117,13 +161,38 @@ class ApiService {
     return false;
   }
 
-  // Structured Profile Endpoints
   static Future<Map<String, dynamic>?> fetchProfileInfo() async {
     try {
       final res = await http.get(Uri.parse('$baseUrl/api/profile/info/'), headers: headers);
       if (res.statusCode == 200) return jsonDecode(res.body);
     } catch (e) { debugPrint('Error profile info: $e'); }
     return null;
+  }
+
+  static Future<Map<String, dynamic>?> fetchProfile() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/profile/'), headers: headers);
+      if (res.statusCode == 200) return jsonDecode(res.body);
+    } catch (e) { debugPrint('Error profile: $e'); }
+    return null;
+  }
+
+  static Future<bool> deleteProfilePhoto() async {
+    try {
+      final res = await http.delete(Uri.parse('$baseUrl/api/profile/crop-photo/'), headers: headers);
+      return res.statusCode == 200;
+    } catch (e) { return false; }
+  }
+
+  static Future<bool> uploadProfilePhoto(String photoType) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/profile/crop-photo/'),
+        headers: headers,
+        body: jsonEncode({'action': photoType}),
+      );
+      return res.statusCode == 200;
+    } catch (e) { return false; }
   }
 
   static Future<bool> saveProfileInfo(Map<String, dynamic> data) async {
@@ -148,6 +217,13 @@ class ApiService {
     } catch (e) { return false; }
   }
 
+  static Future<bool> updateSectionItem(String section, int id, Map<String, dynamic> data) async {
+    try {
+      final res = await http.put(Uri.parse('$baseUrl/api/profile/$section/$id/'), headers: headers, body: jsonEncode(data));
+      return res.statusCode == 200;
+    } catch (e) { return false; }
+  }
+
   static Future<bool> deleteSectionItem(String section, int id) async {
     try {
       final res = await http.delete(Uri.parse('$baseUrl/api/profile/$section/$id/'), headers: headers);
@@ -162,7 +238,7 @@ class LukaMosalaApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Luka Mosala SaaS',
+      title: 'AI JobApply SaaS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -246,7 +322,7 @@ class _LoginOrMainScreenState extends State<LoginOrMainScreen> {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'Luka Mosala SaaS',
+                      'AI JobApply SaaS',
                       style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A)),
                     ),
                     const SizedBox(height: 6),
@@ -299,7 +375,7 @@ class _LoginOrMainScreenState extends State<LoginOrMainScreen> {
                         ),
                         child: _isLoading
                             ? const CircularProgressIndicator(color: Colors.white)
-                            : const Text('Se connecter / S\'inscrire', style: TextStyle(fontWeight: FontWeight.bold)),
+                            : const Text('Se connecter / S\'inscrire', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
                       ),
                     ),
                     const SizedBox(height: 16),
@@ -356,7 +432,7 @@ class _MainTabScreenState extends State<MainTabScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Luka Mosala SaaS',
+          'AI JobApply SaaS',
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         actions: [
@@ -388,10 +464,10 @@ class _MainTabScreenState extends State<MainTabScreen> {
         unselectedItemColor: Colors.grey[600],
         type: BottomNavigationBarType.fixed,
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: 'Candidatures'),
-          BottomNavigationBarItem(icon: Icon(Icons.auto_awesome), label: 'Générer'),
-          BottomNavigationBarItem(icon: Icon(Icons.badge), label: 'Profil'),
-          BottomNavigationBarItem(icon: Icon(Icons.payment), label: 'Abonnement'),
+          BottomNavigationBarItem(icon: Icon(Icons.dashboard_outlined), activeIcon: Icon(Icons.dashboard), label: 'Candidatures'),
+          BottomNavigationBarItem(icon: Icon(Icons.auto_awesome_outlined), activeIcon: Icon(Icons.auto_awesome), label: 'Générer'),
+          BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profil'),
+          BottomNavigationBarItem(icon: Icon(Icons.credit_card_outlined), activeIcon: Icon(Icons.credit_card), label: 'Abonnement'),
         ],
       ),
     );
@@ -427,6 +503,7 @@ class _DashboardTabState extends State<DashboardTab> {
     widget.onRefresh();
   }
 
+  // Preview Modal for CV, LM and Email styled harmoniously
   void _openDetailModal(dynamic pkg, String docType) {
     final offer = pkg['job_offer'] ?? {};
     final paymentStatus = pkg['payment_status'] ?? 'approuved';
@@ -435,9 +512,18 @@ class _DashboardTabState extends State<DashboardTab> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(24.0),
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 20,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -445,9 +531,12 @@ class _DashboardTabState extends State<DashboardTab> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  '$docType - ${offer['title'] ?? 'Poste'}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A)),
+                Expanded(
+                  child: Text(
+                    'Aperçu $docType - ${offer['title'] ?? 'Poste'}',
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A)),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close)),
               ],
@@ -456,7 +545,7 @@ class _DashboardTabState extends State<DashboardTab> {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Text('Status de Paiement: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('Status Paiement: ', style: TextStyle(fontWeight: FontWeight.bold)),
                 Chip(
                   label: Text(paymentStatus, style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)),
                   backgroundColor: paymentStatus == 'approuved' ? Colors.green : Colors.orange,
@@ -467,7 +556,7 @@ class _DashboardTabState extends State<DashboardTab> {
             const SizedBox(height: 8),
             Row(
               children: [
-                const Text('Status de Traitement: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('Status Traitement: ', style: TextStyle(fontWeight: FontWeight.bold)),
                 Chip(
                   label: Text(processingStatus, style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)),
                   backgroundColor: processingStatus == 'finalized' ? Colors.blue : Colors.orange,
@@ -478,29 +567,20 @@ class _DashboardTabState extends State<DashboardTab> {
             const SizedBox(height: 20),
             ElevatedButton.icon(
               onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Aperçu du $docType en cours...')));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Consultation du $docType en cours...')));
               },
-              icon: const Icon(Icons.visibility),
-              label: Text('Voir $docType'),
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0B1F3A)),
+              icon: const Icon(Icons.remove_red_eye_outlined, color: Colors.white),
+              label: Text('Consulter $docType', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0B1F3A), padding: const EdgeInsets.symmetric(vertical: 14)),
             ),
             const SizedBox(height: 10),
             OutlinedButton.icon(
               onPressed: () {
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Téléchargement du $docType en cours...')));
               },
-              icon: const Icon(Icons.download),
-              label: Text('Télécharger $docType'),
-            ),
-            const SizedBox(height: 10),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(ctx);
-                widget.onSwitchTab(3); // Switch to payments tab
-              },
-              icon: const Icon(Icons.payment),
-              label: const Text('Fermer'),
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0F6E56)),
+              icon: const Icon(Icons.download_outlined, color: Color(0xFF0B1F3A)),
+              label: Text('Télécharger $docType', style: const TextStyle(color: Color(0xFF0B1F3A), fontWeight: FontWeight.bold)),
+              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
             ),
           ],
         ),
@@ -524,21 +604,22 @@ class _DashboardTabState extends State<DashboardTab> {
           children: [
             Card(
               color: Colors.white,
+              elevation: 2,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: const Padding(
-                padding: EdgeInsets.all(16.0),
+                padding: EdgeInsets.all(20.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Bienvenue 👋', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+                    Text('Bienvenue 👋', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
                     SizedBox(height: 6),
-                    Text('Vos dossiers de candidature sur mesure (CV 1P & LM 1P) prêts à l\'emploi.',
-                        style: TextStyle(color: Color(0xFF444441), fontSize: 13, fontWeight: FontWeight.w600)),
+                    Text('Vos dossiers de candidature sur mesure (CV 1P & LM 1P) générés par l\'agent IA.',
+                        style: TextStyle(color: Color(0xFF64748B), fontSize: 13, fontWeight: FontWeight.w500)),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
             if (_packages.isEmpty)
               const Card(
                 color: Colors.white,
@@ -552,57 +633,60 @@ class _DashboardTabState extends State<DashboardTab> {
             else
               ..._packages.map((pkg) {
                 final offer = pkg['job_offer'] ?? {};
-                return Card(
-                  color: Colors.white,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(color: const Color(0xFFE0F2FE), borderRadius: BorderRadius.circular(8)),
-                              child: Text(offer['site_category'] ?? 'ACPE', style: const TextStyle(color: Color(0xFF0369A1), fontWeight: FontWeight.bold, fontSize: 11)),
-                            ),
-                            Text(pkg['processing_status'] ?? 'finalized', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.green)),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Text(offer['title'] ?? 'Intitulé non spécifié', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
-                        Text(offer['company'] ?? 'Recruteur', style: const TextStyle(color: Color(0xFF444441), fontSize: 13)),
-                        const Divider(height: 20),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            ElevatedButton(
-                              onPressed: () => _openDetailModal(pkg, 'CV'),
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0B1F3A), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-                              child: const Text('CV', style: TextStyle(fontSize: 12)),
-                            ),
-                            ElevatedButton(
-                              onPressed: () => _openDetailModal(pkg, 'LM'),
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0B1F3A), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-                              child: const Text('LM', style: TextStyle(fontSize: 12)),
-                            ),
-                            ElevatedButton(
-                              onPressed: () => _openDetailModal(pkg, 'EMAIL'),
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF185FA5), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-                              child: const Text('EMAIL', style: TextStyle(fontSize: 12)),
-                            ),
-                            ElevatedButton(
-                              onPressed: () => _openDetailModal(pkg, 'Paiement'),
-                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0F6E56), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-                              child: const Text('Payer', style: TextStyle(fontSize: 12)),
-                            ),
-                          ],
-                        )
-                      ],
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 20.0),
+                  child: Card(
+                    color: Colors.white,
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(color: const Color(0xFFE0F2FE), borderRadius: BorderRadius.circular(8)),
+                                child: Text(offer['site_category'] ?? 'ACPE', style: const TextStyle(color: Color(0xFF0369A1), fontWeight: FontWeight.bold, fontSize: 11)),
+                              ),
+                              Text(pkg['processing_status'] ?? 'finalized', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.green)),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Text(offer['title'] ?? 'Intitulé non spécifié', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+                          const SizedBox(height: 4),
+                          Text(offer['company'] ?? 'Recruteur', style: const TextStyle(color: Color(0xFF64748B), fontSize: 14, fontWeight: FontWeight.w500)),
+                          const SizedBox(height: 16),
+                          const Divider(),
+                          const SizedBox(height: 12),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              IconButton.filledTonal(
+                                onPressed: () => _openDetailModal(pkg, 'CV'),
+                                icon: const Icon(Icons.description_outlined),
+                                tooltip: 'Aperçu CV',
+                                style: IconButton.styleFrom(backgroundColor: const Color(0xFFE0F2FE), foregroundColor: const Color(0xFF0369A1)),
+                              ),
+                              IconButton.filledTonal(
+                                onPressed: () => _openDetailModal(pkg, 'LM'),
+                                icon: const Icon(Icons.mark_email_read_outlined),
+                                tooltip: 'Aperçu Lettre de Motivation',
+                                style: IconButton.styleFrom(backgroundColor: const Color(0xFFE0F2FE), foregroundColor: const Color(0xFF0369A1)),
+                              ),
+                              IconButton.filledTonal(
+                                onPressed: () => _openDetailModal(pkg, 'EMAIL'),
+                                icon: const Icon(Icons.email_outlined),
+                                tooltip: 'Aperçu Email',
+                                style: IconButton.styleFrom(backgroundColor: const Color(0xFFF1F5F9), foregroundColor: const Color(0xFF185FA5)),
+                              ),
+                            ],
+                          )
+                        ],
+                      ),
                     ),
                   ),
                 );
@@ -623,6 +707,7 @@ class StructuredProfileTab extends StatefulWidget {
 
 class _StructuredProfileTabState extends State<StructuredProfileTab> {
   Map<String, dynamic> _info = {};
+  Map<String, dynamic> _profile = {};
   List<dynamic> _experiences = [];
   List<dynamic> _certifications = [];
   List<dynamic> _educations = [];
@@ -638,6 +723,7 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
   void _loadAll() async {
     setState(() => _isLoading = true);
     final info = await ApiService.fetchProfileInfo();
+    final prof = await ApiService.fetchProfile();
     final exps = await ApiService.fetchSection('experiences');
     final certs = await ApiService.fetchSection('certifications');
     final edus = await ApiService.fetchSection('educations');
@@ -645,12 +731,79 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
 
     setState(() {
       _info = info ?? {};
+      _profile = prof ?? {};
       _experiences = exps;
       _certifications = certs;
       _educations = edus;
       _projects = projs;
       _isLoading = false;
     });
+  }
+
+  // Harmonized compact bottom sheet modal styled like CV Preview
+  void _showHarmonizedModal({
+    required String title,
+    required Widget content,
+    required VoidCallback onSave,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(ctx).size.height * 0.85,
+        ),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 16,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+                IconButton(onPressed: () => Navigator.pop(ctx), icon: const Icon(Icons.close)),
+              ],
+            ),
+            const Divider(),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  child: content,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
+                const SizedBox(width: 12),
+                ElevatedButton(
+                  onPressed: () {
+                    onSave();
+                    Navigator.pop(ctx);
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF185FA5), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12)),
+                  child: const Text('Enregistrer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                )
+              ],
+            )
+          ],
+        ),
+      ),
+    );
   }
 
   void _editInfoDialog() {
@@ -666,225 +819,299 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
     final neighborhoodCtrl = TextEditingController(text: _info['neighborhood'] ?? '');
     final summaryCtrl = TextEditingController(text: _info['professional_summary'] ?? '');
 
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) => AlertDialog(
-          title: const Text('Modifier Profil (Info)'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+    _showHarmonizedModal(
+      title: 'Informations Générales',
+      content: Column(
+        children: [
+          TextField(controller: lastNameCtrl, decoration: const InputDecoration(labelText: 'Nom *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: firstNameCtrl, decoration: const InputDecoration(labelText: 'Prénom *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: genderVal,
+            decoration: const InputDecoration(labelText: 'Genre *', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'MALE', child: Text('Homme')),
+              DropdownMenuItem(value: 'FEMALE', child: Text('Femme')),
+              DropdownMenuItem(value: 'OTHER', child: Text('Autre')),
+            ],
+            onChanged: (v) { if (v != null) genderVal = v; },
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: birthCtrl,
+            readOnly: true,
+            decoration: const InputDecoration(
+              labelText: 'Date de naissance *',
+              border: OutlineInputBorder(),
+              suffixIcon: Icon(Icons.calendar_today),
+            ),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: DateTime.tryParse(birthCtrl.text) ?? DateTime(1995, 5, 10),
+                firstDate: DateTime(1950),
+                lastDate: DateTime.now(),
+              );
+              if (picked != null) {
+                birthCtrl.text = picked.toIso8601String().split('T')[0];
+              }
+            },
+          ),
+          const SizedBox(height: 12),
+          TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Numéro principal *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: secPhoneCtrl, decoration: const InputDecoration(labelText: 'Numéro secondaire', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Adresse', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: countryCtrl, decoration: const InputDecoration(labelText: 'Pays', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: districtCtrl, decoration: const InputDecoration(labelText: 'Arrondissement', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: neighborhoodCtrl, decoration: const InputDecoration(labelText: 'Quartier', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: summaryCtrl, decoration: const InputDecoration(labelText: 'Résumé professionnel', border: OutlineInputBorder()), maxLines: 3),
+        ],
+      ),
+      onSave: () async {
+        await ApiService.saveProfileInfo({
+          'last_name': lastNameCtrl.text,
+          'first_name': firstNameCtrl.text,
+          'gender': genderVal,
+          'birth_date': birthCtrl.text,
+          'primary_phone': phoneCtrl.text,
+          'secondary_phone': secPhoneCtrl.text,
+          'address': addressCtrl.text,
+          'country': countryCtrl.text,
+          'district': districtCtrl.text,
+          'neighborhood': neighborhoodCtrl.text,
+          'professional_summary': summaryCtrl.text,
+        });
+        _loadAll();
+      },
+    );
+  }
+
+  void _addOrEditExpDialog([dynamic expItem]) {
+    final titleCtrl = TextEditingController(text: expItem?['title'] ?? '');
+    final companyCtrl = TextEditingController(text: expItem?['company'] ?? '');
+    final industryCtrl = TextEditingController(text: expItem?['industry'] ?? 'Informatique');
+    final locationCtrl = TextEditingController(text: expItem?['location'] ?? '');
+    final startDateCtrl = TextEditingController(text: expItem?['start_date'] ?? '2024-01-01');
+    final endDateCtrl = TextEditingController(text: expItem?['end_date'] ?? '');
+    bool isCurrent = expItem?['is_current'] ?? false;
+    final skillsCtrl = TextEditingController(text: expItem?['skills_acquired'] ?? '');
+
+    _showHarmonizedModal(
+      title: expItem != null ? 'Modifier Expérience' : 'Ajouter Expérience',
+      content: StatefulBuilder(
+        builder: (context, setModalState) => Column(
+          children: [
+            TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Poste occupé *', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(controller: companyCtrl, decoration: const InputDecoration(labelText: 'Structure / Entreprise *', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(controller: industryCtrl, decoration: const InputDecoration(labelText: 'Secteur d\'activité *', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(controller: locationCtrl, decoration: const InputDecoration(labelText: 'Lieu', border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(
+              controller: startDateCtrl,
+              readOnly: true,
+              decoration: const InputDecoration(labelText: 'Date de début *', border: OutlineInputBorder(), suffixIcon: Icon(Icons.calendar_today)),
+              onTap: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: DateTime.tryParse(startDateCtrl.text) ?? DateTime(2024, 1, 1),
+                  firstDate: DateTime(1980),
+                  lastDate: DateTime.now(),
+                );
+                if (picked != null) {
+                  setModalState(() => startDateCtrl.text = picked.toIso8601String().split('T')[0]);
+                }
+              },
+            ),
+            const SizedBox(height: 12),
+            Row(
               children: [
-                TextField(controller: lastNameCtrl, decoration: const InputDecoration(labelText: 'Nom *')),
-                TextField(controller: firstNameCtrl, decoration: const InputDecoration(labelText: 'Prénom *')),
-                DropdownButtonFormField<String>(
-                  value: genderVal,
-                  decoration: const InputDecoration(labelText: 'Genre *'),
-                  items: const [
-                    DropdownMenuItem(value: 'MALE', child: Text('Homme')),
-                    DropdownMenuItem(value: 'FEMALE', child: Text('Femme')),
-                    DropdownMenuItem(value: 'OTHER', child: Text('Autre')),
-                  ],
-                  onChanged: (v) { if (v != null) setModalState(() => genderVal = v); },
+                Checkbox(
+                  value: isCurrent,
+                  onChanged: (v) => setModalState(() => isCurrent = v ?? false),
                 ),
-                TextField(controller: birthCtrl, decoration: const InputDecoration(labelText: 'Date de naissance (AAAA-MM-JJ) *')),
-                TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Numéro principal *')),
-                TextField(controller: secPhoneCtrl, decoration: const InputDecoration(labelText: 'Numéro secondaire')),
-                TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'Adresse')),
-                TextField(controller: countryCtrl, decoration: const InputDecoration(labelText: 'Pays')),
-                TextField(controller: districtCtrl, decoration: const InputDecoration(labelText: 'Arrondissement')),
-                TextField(controller: neighborhoodCtrl, decoration: const InputDecoration(labelText: 'Quartier')),
-                TextField(controller: summaryCtrl, decoration: const InputDecoration(labelText: 'Résumé professionnel'), maxLines: 3),
+                const Text('Poste occupé actuellement', style: TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-            ElevatedButton(
-              onPressed: () async {
-                await ApiService.saveProfileInfo({
-                  'last_name': lastNameCtrl.text,
-                  'first_name': firstNameCtrl.text,
-                  'gender': genderVal,
-                  'birth_date': birthCtrl.text,
-                  'primary_phone': phoneCtrl.text,
-                  'secondary_phone': secPhoneCtrl.text,
-                  'address': addressCtrl.text,
-                  'country': countryCtrl.text,
-                  'district': districtCtrl.text,
-                  'neighborhood': neighborhoodCtrl.text,
-                  'professional_summary': summaryCtrl.text,
-                });
-                Navigator.pop(ctx);
-                _loadAll();
-              },
-              child: const Text('Enregistrer'),
-            )
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _addExpDialog() {
-    final titleCtrl = TextEditingController();
-    final companyCtrl = TextEditingController();
-    final industryCtrl = TextEditingController(text: 'Informatique');
-    final locationCtrl = TextEditingController();
-    final skillsCtrl = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ajouter une expérience'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Poste occupé *')),
-              TextField(controller: companyCtrl, decoration: const InputDecoration(labelText: 'Structure *')),
-              TextField(controller: industryCtrl, decoration: const InputDecoration(labelText: 'Secteur d\'activité *')),
-              TextField(controller: locationCtrl, decoration: const InputDecoration(labelText: 'Lieu')),
-              TextField(controller: skillsCtrl, decoration: const InputDecoration(labelText: 'Compétences acquises')),
+            if (!isCurrent) ...[
+              const SizedBox(height: 8),
+              TextField(
+                controller: endDateCtrl,
+                readOnly: true,
+                decoration: const InputDecoration(labelText: 'Date de fin', border: OutlineInputBorder(), suffixIcon: Icon(Icons.calendar_today)),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: DateTime.tryParse(endDateCtrl.text) ?? DateTime.now(),
+                    firstDate: DateTime(1980),
+                    lastDate: DateTime(2030),
+                  );
+                  if (picked != null) {
+                    setModalState(() => endDateCtrl.text = picked.toIso8601String().split('T')[0]);
+                  }
+                },
+              ),
             ],
+            const SizedBox(height: 12),
+            TextField(controller: skillsCtrl, decoration: const InputDecoration(labelText: 'Compétences acquises', border: OutlineInputBorder())),
+          ],
+        ),
+      ),
+      onSave: () async {
+        final payload = {
+          'title': titleCtrl.text,
+          'company': companyCtrl.text,
+          'industry': industryCtrl.text,
+          'location': locationCtrl.text,
+          'start_date': startDateCtrl.text,
+          'end_date': isCurrent ? null : endDateCtrl.text,
+          'is_current': isCurrent,
+          'skills_acquired': skillsCtrl.text,
+        };
+        if (expItem != null) {
+          await ApiService.updateSectionItem('experiences', expItem['id'], payload);
+        } else {
+          await ApiService.addSectionItem('experiences', payload);
+        }
+        _loadAll();
+      },
+    );
+  }
+
+  void _addOrEditCertDialog([dynamic certItem]) {
+    final titleCtrl = TextEditingController(text: certItem?['title'] ?? '');
+    final yearCtrl = TextEditingController(text: certItem?['year']?.toString() ?? '2025');
+    final instCtrl = TextEditingController(text: certItem?['institution'] ?? '');
+
+    _showHarmonizedModal(
+      title: certItem != null ? 'Modifier Certificat' : 'Ajouter Certificat',
+      content: Column(
+        children: [
+          TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Libellé du certificat *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(
+            controller: yearCtrl,
+            readOnly: true,
+            decoration: const InputDecoration(labelText: 'Année *', border: OutlineInputBorder(), suffixIcon: Icon(Icons.calendar_today)),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: DateTime(int.tryParse(yearCtrl.text) ?? 2025),
+                firstDate: DateTime(1980),
+                lastDate: DateTime(2030),
+                initialDatePickerMode: DatePickerMode.year,
+              );
+              if (picked != null) {
+                yearCtrl.text = picked.year.toString();
+              }
+            },
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          ElevatedButton(
-            onPressed: () async {
-              if (titleCtrl.text.isNotEmpty && companyCtrl.text.isNotEmpty) {
-                await ApiService.addSectionItem('experiences', {
-                  'title': titleCtrl.text,
-                  'company': companyCtrl.text,
-                  'industry': industryCtrl.text,
-                  'location': locationCtrl.text,
-                  'start_date': '2024-01-01',
-                  'is_current': true,
-                  'skills_acquired': skillsCtrl.text,
-                });
-                Navigator.pop(ctx);
-                _loadAll();
-              }
-            },
-            child: const Text('Ajouter'),
-          )
+          const SizedBox(height: 12),
+          TextField(controller: instCtrl, decoration: const InputDecoration(labelText: 'Institution *', border: OutlineInputBorder())),
         ],
       ),
+      onSave: () async {
+        final payload = {
+          'title': titleCtrl.text,
+          'year': int.tryParse(yearCtrl.text) ?? 2025,
+          'institution': instCtrl.text,
+        };
+        if (certItem != null) {
+          await ApiService.updateSectionItem('certifications', certItem['id'], payload);
+        } else {
+          await ApiService.addSectionItem('certifications', payload);
+        }
+        _loadAll();
+      },
     );
   }
 
-  void _addCertDialog() {
-    final titleCtrl = TextEditingController();
-    final yearCtrl = TextEditingController(text: '2025');
-    final instCtrl = TextEditingController();
+  void _addOrEditEduDialog([dynamic eduItem]) {
+    final titleCtrl = TextEditingController(text: eduItem?['title'] ?? '');
+    final yearCtrl = TextEditingController(text: eduItem?['year']?.toString() ?? '2024');
+    final instCtrl = TextEditingController(text: eduItem?['institution'] ?? '');
+    final degreeCtrl = TextEditingController(text: eduItem?['degree_level'] ?? 'Licence');
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ajouter un certificat'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Libellé certificat *')),
-            TextField(controller: yearCtrl, decoration: const InputDecoration(labelText: 'Année *'), keyboardType: TextInputType.number),
-            TextField(controller: instCtrl, decoration: const InputDecoration(labelText: 'Institution *')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          ElevatedButton(
-            onPressed: () async {
-              if (titleCtrl.text.isNotEmpty) {
-                await ApiService.addSectionItem('certifications', {
-                  'title': titleCtrl.text,
-                  'year': int.tryParse(yearCtrl.text) ?? 2025,
-                  'institution': instCtrl.text,
-                });
-                Navigator.pop(ctx);
-                _loadAll();
+    _showHarmonizedModal(
+      title: eduItem != null ? 'Modifier Diplôme' : 'Ajouter Diplôme',
+      content: Column(
+        children: [
+          TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Libellé du diplôme *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(
+            controller: yearCtrl,
+            readOnly: true,
+            decoration: const InputDecoration(labelText: 'Année *', border: OutlineInputBorder(), suffixIcon: Icon(Icons.calendar_today)),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: DateTime(int.tryParse(yearCtrl.text) ?? 2024),
+                firstDate: DateTime(1980),
+                lastDate: DateTime(2030),
+                initialDatePickerMode: DatePickerMode.year,
+              );
+              if (picked != null) {
+                yearCtrl.text = picked.year.toString();
               }
             },
-            child: const Text('Ajouter'),
-          )
+          ),
+          const SizedBox(height: 12),
+          TextField(controller: instCtrl, decoration: const InputDecoration(labelText: 'Institution *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: degreeCtrl, decoration: const InputDecoration(labelText: 'Niveau d\'étude *', border: OutlineInputBorder())),
         ],
       ),
+      onSave: () async {
+        final payload = {
+          'title': titleCtrl.text,
+          'year': int.tryParse(yearCtrl.text) ?? 2024,
+          'institution': instCtrl.text,
+          'degree_level': degreeCtrl.text,
+        };
+        if (eduItem != null) {
+          await ApiService.updateSectionItem('educations', eduItem['id'], payload);
+        } else {
+          await ApiService.addSectionItem('educations', payload);
+        }
+        _loadAll();
+      },
     );
   }
 
-  void _addEduDialog() {
-    final titleCtrl = TextEditingController();
-    final yearCtrl = TextEditingController(text: '2024');
-    final instCtrl = TextEditingController();
-    final degreeCtrl = TextEditingController(text: 'Licence');
+  void _addOrEditProjDialog([dynamic projItem]) {
+    final nameCtrl = TextEditingController(text: projItem?['name'] ?? '');
+    final industryCtrl = TextEditingController(text: projItem?['industry'] ?? 'Informatique');
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ajouter un diplôme'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Libellé du diplôme *')),
-            TextField(controller: yearCtrl, decoration: const InputDecoration(labelText: 'Année *'), keyboardType: TextInputType.number),
-            TextField(controller: instCtrl, decoration: const InputDecoration(labelText: 'Institution *')),
-            TextField(controller: degreeCtrl, decoration: const InputDecoration(labelText: 'Niveau d\'étude *')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          ElevatedButton(
-            onPressed: () async {
-              if (titleCtrl.text.isNotEmpty) {
-                await ApiService.addSectionItem('educations', {
-                  'title': titleCtrl.text,
-                  'year': int.tryParse(yearCtrl.text) ?? 2024,
-                  'institution': instCtrl.text,
-                  'degree_level': degreeCtrl.text,
-                });
-                Navigator.pop(ctx);
-                _loadAll();
-              }
-            },
-            child: const Text('Ajouter'),
-          )
+    _showHarmonizedModal(
+      title: projItem != null ? 'Modifier Projet' : 'Ajouter Projet',
+      content: Column(
+        children: [
+          TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nom du projet *', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          TextField(controller: industryCtrl, decoration: const InputDecoration(labelText: 'Secteur d\'activité *', border: OutlineInputBorder())),
         ],
       ),
-    );
-  }
-
-  void _addProjDialog() {
-    final nameCtrl = TextEditingController();
-    final industryCtrl = TextEditingController(text: 'Informatique');
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Ajouter un projet'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nom du projet *')),
-            TextField(controller: industryCtrl, decoration: const InputDecoration(labelText: 'Secteur d\'activité *')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annuler')),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameCtrl.text.isNotEmpty) {
-                await ApiService.addSectionItem('projects', {
-                  'name': nameCtrl.text,
-                  'industry': industryCtrl.text,
-                });
-                Navigator.pop(ctx);
-                _loadAll();
-              }
-            },
-            child: const Text('Ajouter'),
-          )
-        ],
-      ),
+      onSave: () async {
+        final payload = {
+          'name': nameCtrl.text,
+          'industry': industryCtrl.text,
+        };
+        if (projItem != null) {
+          await ApiService.updateSectionItem('projects', projItem['id'], payload);
+        } else {
+          await ApiService.addSectionItem('projects', payload);
+        }
+        _loadAll();
+      },
     );
   }
 
@@ -894,6 +1121,8 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    final String? photoUrl = _profile['cropped_photo'];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
@@ -901,118 +1130,199 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
         children: [
           Card(
             color: Colors.white,
+            elevation: 2,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
+              padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const CircleAvatar(
-                        radius: 28,
-                        backgroundColor: Color(0xFF185FA5),
-                        child: Icon(Icons.person, color: Colors.white, size: 32),
+                      CircleAvatar(
+                        radius: 36,
+                        backgroundColor: const Color(0xFF185FA5),
+                        backgroundImage: photoUrl != null && photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                        child: photoUrl == null || photoUrl.isEmpty ? const Icon(Icons.person, color: Colors.white, size: 40) : null,
                       ),
-                      TextButton.icon(
-                        onPressed: () {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saisie photo disponible.')));
+
+                      // Fully Operational Contextual Menu Popup for Photo Actions
+                      PopupMenuButton<String>(
+                        icon: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(color: const Color(0xFF185FA5), borderRadius: BorderRadius.circular(8)),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.camera_alt, color: Colors.white, size: 16),
+                              SizedBox(width: 6),
+                              Text('Photo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                        onSelected: (val) async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          if (val == 'Supprimer') {
+                            final ok = await ApiService.deleteProfilePhoto();
+                            if (ok) {
+                              _loadAll();
+                              messenger.showSnackBar(const SnackBar(content: Text('Photo de profil supprimée.')));
+                            }
+                          } else if (val == 'Caméra' || val == 'Galerie') {
+                            final ok = await ApiService.uploadProfilePhoto(val);
+                            if (ok) {
+                              _loadAll();
+                              messenger.showSnackBar(SnackBar(content: Text('Photo mise à jour via $val.')));
+                            } else {
+                              messenger.showSnackBar(SnackBar(content: Text('Action $val en cours de traitement.')));
+                            }
+                          }
                         },
-                        icon: const Icon(Icons.camera_alt, size: 16),
-                        label: const Text('Photo'),
+                        itemBuilder: (ctx) => [
+                          const PopupMenuItem(value: 'Caméra', child: Row(children: [Icon(Icons.camera_alt), SizedBox(width: 8), Text('Caméra')])),
+                          const PopupMenuItem(value: 'Galerie', child: Row(children: [Icon(Icons.photo_library), SizedBox(width: 8), Text('Galerie')])),
+                          const PopupMenuItem(value: 'Supprimer', child: Row(children: [Icon(Icons.delete, color: Colors.red), SizedBox(width: 8), Text('Supprimer', style: TextStyle(color: Colors.red))])),
+                        ],
                       )
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  // 4 EXPLICIT PHOTO ACTION BUTTONS ON MOBILE
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      OutlinedButton.icon(onPressed: () {}, icon: const Icon(Icons.edit, size: 14), label: const Text('Modifier', style: TextStyle(fontSize: 11))),
-                      OutlinedButton.icon(onPressed: () {}, icon: const Icon(Icons.upload, size: 14), label: const Text('Uploader', style: TextStyle(fontSize: 11))),
-                      OutlinedButton.icon(onPressed: () {}, icon: const Icon(Icons.camera, size: 14), label: const Text('Caméra', style: TextStyle(fontSize: 11))),
-                      OutlinedButton.icon(onPressed: () {}, icon: const Icon(Icons.visibility, size: 14), label: const Text('Voir', style: TextStyle(fontSize: 11))),
-                    ],
-                  ),
-                  const Divider(height: 20),
+                  const SizedBox(height: 16),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('${_info['first_name'] ?? 'Christ'} ${_info['last_name'] ?? 'Obiey'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text('${_info['first_name'] ?? 'Christ'} ${_info['last_name'] ?? 'Obiey'}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Color(0xFF0B1F3A))),
                       IconButton(onPressed: _editInfoDialog, icon: const Icon(Icons.edit, color: Color(0xFF185FA5))),
                     ],
                   ),
-                  Text('Tél: ${_info['primary_phone'] ?? '+242 06 613 01 18'}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                  Text('Adresse: ${_info['address'] ?? 'Avenue de l\'Indépendance'} | Pays: ${_info['country'] ?? 'Congo'}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                  Text('Arrondissement: ${_info['district'] ?? 'Poto-Poto'} | Quartier: ${_info['neighborhood'] ?? 'Centre'}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+
+                  if (_info['primary_phone'] != null && _info['primary_phone'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text('Tél: ${_info['primary_phone']}', style: const TextStyle(color: Colors.grey, fontSize: 13, fontWeight: FontWeight.w600)),
+                    ),
+                  if (_info['address'] != null && _info['address'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text('Adresse: ${_info['address']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                    ),
+                  if (_info['country'] != null && _info['country'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text('Pays: ${_info['country']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                    ),
+                  if (_info['district'] != null && _info['district'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text('Arrondissement: ${_info['district']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                    ),
+                  if (_info['neighborhood'] != null && _info['neighborhood'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0),
+                      child: Text('Quartier: ${_info['neighborhood']}', style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                    ),
+                  if (_info['professional_summary'] != null && _info['professional_summary'].toString().isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text('Summary: ${_info['professional_summary']}', style: const TextStyle(color: Color(0xFF444441), fontSize: 13, fontStyle: FontStyle.italic)),
+                    ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
 
-          _buildSectionHeader('Expériences Professionnelles', _addExpDialog),
+          _buildSectionHeader('Expériences Professionnelles', () => _addOrEditExpDialog()),
           ..._experiences.map((exp) => Card(
-            margin: const EdgeInsets.only(bottom: 8),
+            margin: const EdgeInsets.only(bottom: 10),
+            color: Colors.white,
+            elevation: 1,
             child: ListTile(
-              title: Text(exp['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text('${exp['company'] ?? ''} (${exp['start_date'] ?? ''})'),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () async {
-                  await ApiService.deleteSectionItem('experiences', exp['id']);
-                  _loadAll();
-                },
+              title: Text(exp['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+              subtitle: Text('${exp['company'] ?? ''} | Début: ${exp['start_date'] ?? ''} | Fin: ${exp['is_current'] == true ? 'Poste Actuel' : (exp['end_date'] ?? 'N/A')}'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit, color: Color(0xFF185FA5)), onPressed: () => _addOrEditExpDialog(exp)),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () async {
+                      await ApiService.deleteSectionItem('experiences', exp['id']);
+                      _loadAll();
+                    },
+                  ),
+                ],
               ),
             ),
           )),
 
-          _buildSectionHeader('Certifications et Attestations', _addCertDialog),
+          _buildSectionHeader('Certifications et Attestations', () => _addOrEditCertDialog()),
           ..._certifications.map((cert) => Card(
-            margin: const EdgeInsets.only(bottom: 8),
+            margin: const EdgeInsets.only(bottom: 10),
+            color: Colors.white,
+            elevation: 1,
             child: ListTile(
-              title: Text('${cert['title']} (${cert['year']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+              title: Text('${cert['title']} (${cert['year']})', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
               subtitle: Text(cert['institution'] ?? ''),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () async {
-                  await ApiService.deleteSectionItem('certifications', cert['id']);
-                  _loadAll();
-                },
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit, color: Color(0xFF185FA5)), onPressed: () => _addOrEditCertDialog(cert)),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () async {
+                      await ApiService.deleteSectionItem('certifications', cert['id']);
+                      _loadAll();
+                    },
+                  ),
+                ],
               ),
             ),
           )),
 
-          _buildSectionHeader('Diplômes', _addEduDialog),
+          _buildSectionHeader('Diplômes', () => _addOrEditEduDialog()),
           ..._educations.map((edu) => Card(
-            margin: const EdgeInsets.only(bottom: 8),
+            margin: const EdgeInsets.only(bottom: 10),
+            color: Colors.white,
+            elevation: 1,
             child: ListTile(
-              title: Text('${edu['title']} - ${edu['degree_level']} (${edu['year']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+              title: Text('${edu['title']} - ${edu['degree_level']} (${edu['year']})', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
               subtitle: Text(edu['institution'] ?? ''),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () async {
-                  await ApiService.deleteSectionItem('educations', edu['id']);
-                  _loadAll();
-                },
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit, color: Color(0xFF185FA5)), onPressed: () => _addOrEditEduDialog(edu)),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () async {
+                      await ApiService.deleteSectionItem('educations', edu['id']);
+                      _loadAll();
+                    },
+                  ),
+                ],
               ),
             ),
           )),
 
-          _buildSectionHeader('Projets', _addProjDialog),
+          _buildSectionHeader('Projets', () => _addOrEditProjDialog()),
           ..._projects.map((proj) => Card(
-            margin: const EdgeInsets.only(bottom: 8),
+            margin: const EdgeInsets.only(bottom: 10),
+            color: Colors.white,
+            elevation: 1,
             child: ListTile(
-              title: Text(proj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+              title: Text(proj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
               subtitle: Text(proj['industry'] ?? ''),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: () async {
-                  await ApiService.deleteSectionItem('projects', proj['id']);
-                  _loadAll();
-                },
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(icon: const Icon(Icons.edit, color: Color(0xFF185FA5)), onPressed: () => _addOrEditProjDialog(proj)),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    onPressed: () async {
+                      await ApiService.deleteSectionItem('projects', proj['id']);
+                      _loadAll();
+                    },
+                  ),
+                ],
               ),
             ),
           )),
@@ -1023,7 +1333,7 @@ class _StructuredProfileTabState extends State<StructuredProfileTab> {
 
   Widget _buildSectionHeader(String title, VoidCallback onAdd) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12.0),
+      padding: const EdgeInsets.symmetric(vertical: 14.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -1046,23 +1356,25 @@ class CreateApplicationTab extends StatefulWidget {
 class _CreateApplicationTabState extends State<CreateApplicationTab> {
   final _urlController = TextEditingController();
   final _textController = TextEditingController();
+  String? _selectedFileName;
   bool _isGenerating = false;
 
   void _generate() async {
-    if (_urlController.text.isEmpty && _textController.text.isEmpty) {
+    if (_urlController.text.isEmpty && _textController.text.isEmpty && _selectedFileName == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Veuillez spécifier l\'URL ou le texte de l\'offre.')),
+        const SnackBar(content: Text('Veuillez spécifier l\'URL, le texte ou sélectionner un document (PDF / Image).')),
       );
       return;
     }
 
     setState(() => _isGenerating = true);
-    final success = await ApiService.generateApplication(_textController.text, _urlController.text);
+    final success = await ApiService.generateApplication(_textController.text, _urlController.text, fileName: _selectedFileName);
     setState(() => _isGenerating = false);
 
     if (success) {
       _urlController.clear();
       _textController.clear();
+      setState(() => _selectedFileName = null);
       widget.onGenerated();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1084,6 +1396,7 @@ class _CreateApplicationTabState extends State<CreateApplicationTab> {
       padding: const EdgeInsets.all(16.0),
       child: Card(
         color: Colors.white,
+        elevation: 2,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Padding(
           padding: const EdgeInsets.all(20.0),
@@ -1096,9 +1409,41 @@ class _CreateApplicationTabState extends State<CreateApplicationTab> {
               TextField(
                 controller: _urlController,
                 decoration: const InputDecoration(
-                  labelText: 'Lien URL de l\'offre',
+                  labelText: 'Lien URL de l\'offre d\'emploi',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.link),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Center(child: Text('OU', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey))),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.grey.shade300, style: BorderStyle.solid),
+                  borderRadius: BorderRadius.circular(12),
+                  color: const Color(0xFFF8FAFC),
+                ),
+                child: Column(
+                  children: [
+                    const Icon(Icons.upload_file, color: Color(0xFF185FA5), size: 32),
+                    const SizedBox(height: 8),
+                    Text(
+                      _selectedFileName != null ? 'Fichier: $_selectedFileName' : 'Téléverser Offre PDF / Image (Capture)',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0B1F3A)),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _selectedFileName = 'offre_d_emploi_capture.pdf';
+                        });
+                      },
+                      icon: const Icon(Icons.attach_file, size: 16),
+                      label: const Text('Choisir un document (PDF / Image)'),
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0B1F3A)),
+                    )
+                  ],
                 ),
               ),
               const SizedBox(height: 12),
@@ -1116,8 +1461,8 @@ class _CreateApplicationTabState extends State<CreateApplicationTab> {
               ElevatedButton.icon(
                 onPressed: _isGenerating ? null : _generate,
                 icon: _isGenerating ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.auto_awesome),
-                label: Text(_isGenerating ? 'Génération en cours...' : 'Lancer la Génération IA'),
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF185FA5)),
+                label: Text(_isGenerating ? 'Génération par AGENT_IA_CV...' : 'Lancer la Génération IA'),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF185FA5), padding: const EdgeInsets.symmetric(vertical: 16)),
               )
             ],
           ),
@@ -1137,18 +1482,44 @@ class PaymentsTab extends StatefulWidget {
 
 class _PaymentsTabState extends State<PaymentsTab> {
   final _phoneController = TextEditingController(text: '+242066130118');
+  List<dynamic> _plans = [];
+  int? _selectedPlanId;
+  String _selectedMethod = 'AIRTEL_MONEY';
   bool _isPaying = false;
+  bool _isLoadingPlans = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPlans();
+  }
+
+  void _loadPlans() async {
+    setState(() => _isLoadingPlans = true);
+    final plansList = await ApiService.fetchPlans();
+    setState(() {
+      _plans = plansList;
+      if (_plans.isNotEmpty) {
+        _selectedPlanId = _plans[0]['id'];
+      }
+      _isLoadingPlans = false;
+    });
+  }
 
   void _pay() async {
+    if (_selectedPlanId == null && _plans.isNotEmpty) {
+      _selectedPlanId = _plans[0]['id'];
+    }
+
     setState(() => _isPaying = true);
-    final success = await ApiService.payMobileMoney(2, 'AIRTEL_MONEY', _phoneController.text);
+    final success = await ApiService.payMobileMoney(_selectedPlanId ?? 1, _selectedMethod, _phoneController.text);
     setState(() => _isPaying = false);
 
     if (success) {
       widget.onPaid();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Paiement réussi ! Crédits rechargés.')),
+          SnackBar(content: Text('Paiement réussi via $_selectedMethod ! Crédits rechargés.')),
         );
       }
     } else {
@@ -1162,22 +1533,58 @@ class _PaymentsTabState extends State<PaymentsTab> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoadingPlans) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (_plans.isNotEmpty) ...[
+            const Text('Formules d\'Abonnement', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+            const SizedBox(height: 10),
+            ..._plans.map((p) => Card(
+              color: _selectedPlanId == p['id'] ? const Color(0xFFE0F2FE) : Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(
+                  color: _selectedPlanId == p['id'] ? const Color(0xFF185FA5) : Colors.grey.shade300,
+                  width: _selectedPlanId == p['id'] ? 2 : 1,
+                ),
+              ),
+              child: ListTile(
+                title: Text(p['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('${p['description'] ?? ''} (${p['applications_limit']} candidatures)'),
+                trailing: Text('${p['price_fcfa']} FCFA', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF185FA5), fontSize: 16)),
+                onTap: () => setState(() => _selectedPlanId = p['id']),
+              ),
+            )),
+            const SizedBox(height: 16),
+          ],
           Card(
             color: Colors.white,
+            elevation: 2,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             child: Padding(
-              padding: const EdgeInsets.all(16.0),
+              padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Pack 5 Candidatures', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
-                  const SizedBox(height: 4),
-                  const Text('2 000 FCFA', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF185FA5))),
-                  const SizedBox(height: 16),
+                  const Text('Règlement Mobile Money', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0B1F3A))),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: _selectedMethod,
+                    decoration: const InputDecoration(labelText: 'Mode de paiement', border: OutlineInputBorder()),
+                    items: const [
+                      DropdownMenuItem(value: 'AIRTEL_MONEY', child: Text('Airtel Money Congo')),
+                      DropdownMenuItem(value: 'MTN_MOMO', child: Text('MTN Mobile Money Congo')),
+                      DropdownMenuItem(value: 'PAYDUNYA', child: Text('Carte Bancaire (PayDunya)')),
+                    ],
+                    onChanged: (v) { if (v != null) setState(() => _selectedMethod = v); },
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: _phoneController,
                     decoration: const InputDecoration(
@@ -1185,11 +1592,14 @@ class _PaymentsTabState extends State<PaymentsTab> {
                       border: OutlineInputBorder(),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: _isPaying ? null : _pay,
-                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0F6E56)),
-                    child: Text(_isPaying ? 'Traitement...' : 'Payer via Airtel / MTN MoMo'),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isPaying ? null : _pay,
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0F6E56), padding: const EdgeInsets.symmetric(vertical: 16)),
+                      child: Text(_isPaying ? 'Traitement...' : 'Payer et recharger', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 16)),
+                    ),
                   )
                 ],
               ),

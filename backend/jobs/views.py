@@ -14,31 +14,39 @@ def check_resultat_folder_overrides(package, user):
     """
     If Jules has placed generated application deliverables in /resultat/<USER_ID>/<SITE>/<POSTE>/,
     override package deliverable URLs accordingly for paid users.
+    Calculate processing_status in real-time:
+    - 'finalized' if deliverables (CV/LM) are ready
+    - 'inprocess' if payment is approved but deliverables are building
+    - 'pending' if payment is pending
     """
-    if package.payment_status != 'approuved':
-        return package
-
     base_dir = Path(settings.BASE_DIR).parent if hasattr(settings, 'BASE_DIR') else Path.cwd()
     res_dir = base_dir / "resultat" / str(user.id)
 
-    if not res_dir.exists():
-        return package
+    if package.payment_status == 'approuved' and res_dir.exists():
+        for site_dir in res_dir.iterdir():
+            if site_dir.is_dir():
+                for poste_dir in site_dir.iterdir():
+                    if poste_dir.is_dir():
+                        for f in poste_dir.iterdir():
+                            fname = f.name.upper()
+                            if "-CV.PDF" in fname:
+                                package.cv_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
+                            elif "-LM.PDF" in fname:
+                                package.cover_letter_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
+                            elif "-EMAIL.TXT" in fname:
+                                package.email_txt = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
+                            elif "-OFFRE.PDF" in fname:
+                                package.offer_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
 
-    for site_dir in res_dir.iterdir():
-        if site_dir.is_dir():
-            for poste_dir in site_dir.iterdir():
-                if poste_dir.is_dir():
-                    for f in poste_dir.iterdir():
-                        fname = f.name.upper()
-                        if "-CV.PDF" in fname:
-                            package.cv_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
-                        elif "-LM.PDF" in fname:
-                            package.cover_letter_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
-                        elif "-EMAIL.TXT" in fname:
-                            package.email_txt = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
-                        elif "-OFFRE.PDF" in fname:
-                            package.offer_pdf = f"/media/resultat/{user.id}/{site_dir.name}/{poste_dir.name}/{f.name}"
+    # Real-time processing status evaluation
+    if package.cv_pdf and package.cover_letter_pdf:
+        package.processing_status = 'finalized'
+    elif package.payment_status == 'approuved':
+        package.processing_status = 'inprocess'
+    else:
+        package.processing_status = 'pending'
 
+    package.save(update_fields=['processing_status'])
     return package
 
 

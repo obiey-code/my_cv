@@ -28,9 +28,17 @@ class InitiatePaymentView(APIView):
         payment_method = request.data.get('payment_method')
         phone_number = request.data.get('phone_number', '')
 
-        try:
-            plan = SubscriptionPlan.objects.get(id=plan_id)
-        except SubscriptionPlan.DoesNotExist:
+        plan = None
+        if plan_id:
+            try:
+                plan = SubscriptionPlan.objects.get(id=plan_id)
+            except (SubscriptionPlan.DoesNotExist, ValueError, TypeError):
+                plan = None
+
+        if not plan:
+            plan = SubscriptionPlan.objects.first()
+
+        if not plan:
             return Response({"error": "Plan d'abonnement introuvable."}, status=status.HTTP_404_NOT_FOUND)
 
         tx_ref = f"TX-{uuid.uuid4().hex[:10].upper()}"

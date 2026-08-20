@@ -30,6 +30,18 @@ class PhotoCropView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    def delete(self, request):
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        if profile.cropped_photo:
+            profile.cropped_photo.delete(save=False)
+            profile.cropped_photo = None
+        if profile.original_photo:
+            profile.original_photo.delete(save=False)
+            profile.original_photo = None
+        profile.save()
+        CommandesSyncService.sync_user_commandes(request.user)
+        return Response(ProfileSerializer(profile).data, status=status.HTTP_200_OK)
+
     def post(self, request):
         profile, _ = Profile.objects.get_or_create(user=request.user)
 
